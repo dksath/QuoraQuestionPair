@@ -1,0 +1,15 @@
+{
+  "short_name": "QuestionPair",
+  "name": "QuestionPair",
+  "icons": [
+    {
+      "src": "toppng.com-question-mark-icon-png-980x980.png",
+      "type": "image/png",
+      "sizes": "512x512"
+    }
+  ],
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#000000",
+  "background_color": "#ffffff"
+}

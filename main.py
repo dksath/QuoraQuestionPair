@@ -1,38 +1,34 @@
 from urllib.request import Request
-from fastapi import FastAPI, JSONResponse, status, Form
+from fastapi import FastAPI, status, Form, Response, Request, Header
+from fastapi.responses import JSONResponse
+from fastapi.encoders import jsonable_encoder
+from pydantic import BaseModel
 import numpy as np
 import pandas as pd
 import tensorflow as tf
 import transformers
 import uvicorn
-
-app = FastAPI()
+from starlette.middleware import Middleware
+from starlette.middleware.cors import CORSMiddleware
 
 max_length = 128  # Maximum length of input sentence to the model.
 batch_size = 4
 epochs = 2
-df = pd.read_csv("quora-question-pairs/train.csv")
 
-ALLOWED_ORIGINS = '*'    # or 'foo.com', etc.
+app = FastAPI()
 
-# handle CORS preflight requests
-@app.options('/{rest_of_path:path}')
-async def preflight_handler(request: Request, rest_of_path: str) -> Response:
-    response = Response()
-    response.headers['Access-Control-Allow-Origin'] = ALLOWED_ORIGINS
-    response.headers['Access-Control-Allow-Methods'] = 'POST, GET, DELETE, OPTIONS'
-    response.headers['Access-Control-Allow-Headers'] = 'Authorization, Content-Type'
-    return response
 
-# set CORS headers
-@app.middleware("http")
-async def add_CORS_header(request: Request, call_next):
-    response = await call_next(request)
-    response.headers['Access-Control-Allow-Origin'] = ALLOWED_ORIGINS
-    response.headers['Access-Control-Allow-Methods'] = 'POST, GET, DELETE, OPTIONS'
-    response.headers['Access-Control-Allow-Headers'] = 'Authorization, Content-Type'
-    return response
+origins=["*"]
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+    
 class BertSemanticDataGenerator(tf.keras.utils.Sequence):
     """Generates batches of data.
 
@@ -109,20 +105,6 @@ class BertSemanticDataGenerator(tf.keras.utils.Sequence):
         if self.shuffle:
             np.random.RandomState(42).shuffle(self.indexes)
 
-#Dropping Null values
-print(df.isnull().sum(axis=0))
-df.dropna(axis=0,inplace=True)
-
-#create mask for train-test distribution
-mask = np.random.rand(len(df)) < 0.7
-train_df = df[mask]
-not_train = df[~mask]
-
-#create mask for val-test distribution
-mask = np.random.rand(len(not_train)) < 0.5
-test_df = not_train[mask]
-
-
 def build_model():
     input_ids = tf.keras.layers.Input(
     shape=(max_length,), dtype=tf.int32, name="input_ids"
@@ -138,13 +120,13 @@ def build_model():
     # Loading pretrained BERT model.
     bert_model = transformers.TFBertModel.from_pretrained("bert-base-uncased")
     # Freeze the BERT model to reuse the pretrained features without modifying them.
-    bert_model.trainable = True
+    bert_model.trainable = False
 
-    sequence_output, pooled_output = bert_model(
+    output = bert_model(
         input_ids, attention_mask=attention_masks, token_type_ids=token_type_ids
     )
     # Add trainable layers on top of frozen layers to adapt the pretrained features on the new data.
-    bi_lstm = tf.keras.layers.Bidirectional(tf.keras.layers.LSTM(64, return_sequences=True))(sequence_output)
+    bi_lstm = tf.keras.layers.Bidirectional(tf.keras.layers.LSTM(64, return_sequences=True))(output['last_hidden_state'])
 
     # Applying hybrid pooling approach to bi_lstm sequence output.
     avg_pool = tf.keras.layers.GlobalAveragePooling1D()(bi_lstm)
@@ -157,56 +139,76 @@ def build_model():
     )
 
     model.compile(
-        optimizer=tf.keras.optimizers.Adam(1e-5),
+        optimizer=tf.keras.optimizers.Adam(),
         loss="categorical_crossentropy",
         metrics=["acc"],
     )
+    model.load_weights('model/variables/variables')
+    app.state.model = model
+    print("model built")
+  
 
-    model.load_weights('model\variables\variables')
+class sentenceItem(BaseModel):
+    sentence1: str
+    sentence2: str
 
-    return model
 
-
-
-def check_similarity(sentence1, sentence2, model):
-  sentence_pairs = np.array([[str(sentence1), str(sentence2)]])
-  test_data = BertSemanticDataGenerator(
-      sentence_pairs, labels=None, batch_size=1, shuffle=False, include_targets=False,
-  )
-  labels = [1,0]
-
-  proba = model.predict(test_data)[0]
-  idx = np.argmax(proba)
-  proba = f"{proba[idx]: .2f}%"
-  pred = labels[idx]
-  return pred, proba
-
+def check_similarity(sentence1, sentence2,model):
+    sentence_pairs = np.array([[str(sentence1), str(sentence2)]])
+    test_data = BertSemanticDataGenerator(
+        sentence_pairs, labels=None, batch_size=1, shuffle=False, include_targets=False,
+    )
+    labels = [1,0]
+    proba = model.predict(test_data[0])
+    idx = np.argmax(proba)
+    proba = f"{proba[0][idx]: .2f}%"
+    pred = labels[idx]
+    return pred, proba
 
 @app.post("/predict")
-async def predict(sentence1: str = Form(), sentence2: str = Form()):
+async def predict(sentenceItem: sentenceItem):
     try:
-        model = build_model()
-    
-        pred, proba = check_similarity(sentence1, sentence2, model)
-        if pred == 0:
-            value = f"similar with a score of {proba}"
-        else:
-            value = f"not similar with a score of {proba}"
-
-        response = JSONResponse({
-            "statusCode": 200,
-            "status": "Prediction made",
-            "result": "The two questions are: " + value
-            })
+        print(sentenceItem.sentence1, sentenceItem.sentence2)
+        build_model()
+        app.state.sentence1 = sentenceItem.sentence1
+        app.state.sentence2 = sentenceItem.sentence2
+        return JSONResponse(
+            status_code = status.HTTP_200_OK,
+            )
 
     except Exception as error:
         return JSONResponse({
             "statusCode": 500,
-            "status": "Could not make prediction",
+            "status": "Could not make prediction, please try again",
             "error": str(error)
         })
 
+@app.get("/result")
+async def result():
+    #load model
+    model = app.state.model
+
+    sentence1 = app.state.sentence1
+    sentence2 = app.state.sentence2
+    #predict
+    pred, proba = check_similarity(sentence1, sentence2,model)
+
+    if pred == 0:
+        value = f"have a similarity score of {proba} and thus are duplicates of each other"
+    else:
+        value = f"have a similarity score of {proba} and are not duplicates of each other"
+
+    app.state.value = value
+
+    items=[]
+    items.append({'value': value, 'sentence1': sentence1, 'sentence2': sentence2})
     
+    return JSONResponse({
+        "statusCode": 200,
+        "status": "Success",
+        "items": items
+    })
+
 
 
 if __name__ == "__main__":
