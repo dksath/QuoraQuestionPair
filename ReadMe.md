@@ -17,7 +17,7 @@ To run the model in the prototype, install `FastAPI` and `uvicorn` server. More 
        - `Uvicorn`
        - `TensorFlow`
        - `pandas`
-       - `transformers` *(HuggingFace)*
+       - `transformers` (HuggingFace)
        - `numpy`
     
     Install dependenices by [Anaconda](https://conda.io/projects/conda/en/latest/user-guide/install/index.html):
