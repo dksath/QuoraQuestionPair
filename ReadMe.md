@@ -6,7 +6,7 @@
     git clone https://github.com/dksath/QuoraQuestionPair
     ```
 
-2. Download the model weights from `(enter gdrive link)` 
+2. Download the model weights from [Releases](https://github.com/dksath/QuoraQuestionPair/releases/tag/v1.0)
 
 3. Unzip file and add `model` folder into the repo
 
